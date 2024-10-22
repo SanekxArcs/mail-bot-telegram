@@ -1,0 +1,20 @@
+{
+  "name": "botmail",
+  "version": "1.0.0",
+  "description": "Telegram бот для управління електронною поштою",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0",
+    "node-telegram-bot-api": "^0.66.0",
+    "winston": "^3.15.0"
+  }
+}
