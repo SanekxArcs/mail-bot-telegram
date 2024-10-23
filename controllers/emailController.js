@@ -10,8 +10,13 @@ const categoryStore = require("../utils/categoryStore");
 
 const pendingEmails = {};
 const emailTimestamps = {};
-const dailyEmails = []; // Масив для зберігання листів протягом дня
 const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+
+const settings = {
+  updateInterval: 5 * 60 * 1000, // 5 хвилин
+  dailySummaryTime: { hour: 18, minute: 0 }, // 18:00
+  maxEmailsPerCheck: 20,
+};
 
 async function checkEmail() {
   try {
@@ -22,37 +27,20 @@ async function checkEmail() {
       (message) => !pendingEmails.hasOwnProperty(message.id)
     );
 
-    // Обмежуємо кількість листів до 20
-    const maxPendingEmails = 20;
-    const availableSlots = maxPendingEmails - Object.keys(pendingEmails).length;
+    // Обмежуємо кількість листів
+    const availableSlots =
+      settings.maxEmailsPerCheck - Object.keys(pendingEmails).length;
     const messagesToProcess = newMessages.slice(0, availableSlots);
 
     for (const message of messagesToProcess) {
       const emailDetails = await gmailService.getEmailDetails(message.id);
       const { id, sender, subject, date, content } = emailDetails;
 
-      // Додаємо лист до щоденного підсумку
-      dailyEmails.push({
-        id,
-        sender,
-        subject,
-        date,
-      });
+      // Зберігаємо деталі листа
+      pendingEmails[id] = { sender, subject, date, content, id, emailDetails };
+      emailTimestamps[id] = Date.now();
 
-      // Перевірка, чи відправник відомий
-      const senderCategory = senderStore.getSenderCategory(sender);
-
-      if (!senderCategory) {
-        // Зберігаємо деталі листа
-        pendingEmails[id] = { sender, subject, date, content, id };
-        emailTimestamps[id] = Date.now();
-
-        await askForSorting(sender, subject, date, content, id);
-      } else {
-        await handleEmailByCategory(senderCategory, content);
-        // Позначаємо лист як прочитаний
-        await gmailService.markEmailAsRead(id);
-      }
+      await askForAction(emailDetails);
     }
 
     // Перевіряємо листи, які очікують понад 1 день
@@ -71,56 +59,22 @@ async function checkEmail() {
   }
 }
 
-async function sendDailySummary() {
-  if (dailyEmails.length === 0) {
-    await sendMessage(telegramChatId, "Сьогодні ви не отримали нових листів.");
-    return;
-  }
+async function askForAction(emailDetails) {
+  const { sender, subject, date, id } = emailDetails;
 
-  let summaryMessage = `Підсумок отриманої пошти за сьогодні:\n\nКількість листів: ${dailyEmails.length}\n\n`;
-
-  for (const email of dailyEmails) {
-    const formattedDate = email.date.toLocaleString();
-    summaryMessage += `📧 **Від:** ${email.sender}\n**Тема:** ${email.subject}\n**Дата:** ${formattedDate}\n\n`;
-  }
-
-  const options = {
-    parse_mode: "Markdown",
-  };
-
-  await sendMessage(telegramChatId, summaryMessage, options);
-
-  // Очищуємо масив після відправки підсумку
-  dailyEmails.length = 0;
-}
-
-async function askForSorting(
-  emailSender,
-  emailSubject,
-  emailDate,
-  emailContent,
-  emailId
-) {
-  const categories = categoryStore.loadCategories();
-
-  // Створюємо кнопки категорій
-  const categoryButtons = categories.map((category) => ({
-    text: category,
-    callback_data: `category_${category}_${emailId}`,
-  }));
-
-  // Додаємо додаткові кнопки
-  categoryButtons.push(
-    { text: "Нова категорія", callback_data: `new_category_${emailId}` },
-    { text: "Надіслати до GPT", callback_data: `send_gpt_${emailId}` },
-    { text: "Відмітити як прочитане", callback_data: `mark_read_${emailId}` },
-    { text: "Видалити лист", callback_data: `delete_email_${emailId}` }
-  );
+  // Кнопки дій
+  const actionButtons = [
+    { text: "Відповісти", callback_data: `reply_${id}` },
+    { text: "GPT", callback_data: `send_gpt_${id}` },
+    { text: "Відмітити прочитаним", callback_data: `mark_read_${id}` },
+    { text: "Пропустити", callback_data: `skip_${id}` },
+    { text: "Фільтрувати", callback_data: `filter_${id}` },
+  ];
 
   // Розбиваємо кнопки на рядки по 2 кнопки
   const inline_keyboard = [];
-  for (let i = 0; i < categoryButtons.length; i += 2) {
-    inline_keyboard.push(categoryButtons.slice(i, i + 2));
+  for (let i = 0; i < actionButtons.length; i += 2) {
+    inline_keyboard.push(actionButtons.slice(i, i + 2));
   }
 
   const options = {
@@ -130,119 +84,37 @@ async function askForSorting(
     parse_mode: "Markdown",
   };
 
-  const formattedDate = emailDate.toLocaleString();
+  const formattedDate = date.toLocaleString();
 
   const messageText = `Ви отримали новий лист:
 
-**Від:** ${emailSender}
-**Тема:** ${emailSubject}
+**Від:** ${sender}
+**Тема:** ${subject}
 **Дата:** ${formattedDate}
 
-Як ви хочете відсортувати цей лист?`;
+Що ви хочете зробити з цим листом?`;
 
   await sendMessage(telegramChatId, messageText, options);
-}
-
-async function handleEmailByCategory(category, emailContent) {
-  switch (category) {
-    case "newsletter":
-      await gmailService.unsubscribeFromNewsletter(emailContent);
-      break;
-    case "task":
-      const task = extractTaskFromEmail(emailContent);
-      if (task) {
-        await calendarController.addTaskToCalendar(
-          task.title,
-          emailContent,
-          task.dueDate
-        );
-      }
-      break;
-    case "important":
-      await sendMessage(
-        telegramChatId,
-        'Лист віднесено до категорії "Важливе".'
-      );
-      break;
-    case "other":
-      await sendMessage(telegramChatId, 'Лист віднесено до категорії "Інше".');
-      break;
-    default:
-      await sendMessage(
-        telegramChatId,
-        `Лист віднесено до категорії "${category}".`
-      );
-      break;
-  }
-}
-
-function extractTaskFromEmail(emailContent) {
-  // Реалізуйте логіку вилучення завдання з листа
-  // Поверніть об'єкт { title: 'Назва завдання', dueDate: '2024-12-31T23:59:59Z' }
-  return null;
 }
 
 async function handleCallbackQuery(callbackQuery) {
   const msg = callbackQuery.message;
   const data = callbackQuery.data;
 
-  if (data.startsWith("category_")) {
-    const [_, category, emailId] = data.split("_");
-
+  if (data.startsWith("reply_")) {
+    const emailId = data.replace("reply_", "");
     const emailDetails = pendingEmails[emailId];
 
     if (emailDetails) {
-      senderStore.saveSender(emailDetails.sender, category);
-      await sendMessage(
-        msg.chat.id,
-        `Лист від ${emailDetails.sender} збережено в категорію "${category}".`
-      );
-      await handleEmailByCategory(category, emailDetails.content);
-      await gmailService.markEmailAsRead(emailId);
-
-      // Видаляємо лист з списку очікування та часових міток
-      delete pendingEmails[emailId];
-      delete emailTimestamps[emailId];
-
-      // Завантажуємо наступний лист
-      await checkEmail();
-    }
-  } else if (data.startsWith("send_gpt_")) {
-    const emailId = data.replace("send_gpt_", "");
-    const emailDetails = pendingEmails[emailId];
-
-    if (emailDetails) {
-      const summary = await openaiService.summarizeEmail(emailDetails.content);
-      await sendMessage(msg.chat.id, `Підсумок листа:\n\n${summary}`);
-    } else {
-      await sendMessage(
-        msg.chat.id,
-        "Помилка: Не вдалося знайти деталі листа."
-      );
-    }
-  } else if (data.startsWith("new_category_")) {
-    const emailId = data.replace("new_category_", "");
-    const emailDetails = pendingEmails[emailId];
-
-    if (emailDetails) {
-      // Запитуємо назву нової категорії
-      await sendMessage(msg.chat.id, "Введіть назву нової категорії:");
+      await sendMessage(msg.chat.id, "Напишіть відповідь на лист:");
 
       // Очікуємо введення тексту
-      bot.once("message", async (msg) => {
-        const newCategory = msg.text.trim();
+      bot.once("message", async (replyMsg) => {
+        const replyText = replyMsg.text.trim();
 
-        // Додаємо нову категорію
-        categoryStore.addCategory(newCategory);
+        await gmailService.sendEmailReply(emailDetails.emailDetails, replyText);
 
-        // Зберігаємо відправника з новою категорією
-        senderStore.saveSender(emailDetails.sender, newCategory);
-
-        await sendMessage(
-          msg.chat.id,
-          `Категорію "${newCategory}" додано. Лист від ${emailDetails.sender} збережено в цю категорію.`
-        );
-        await handleEmailByCategory(newCategory, emailDetails.content);
+        await sendMessage(msg.chat.id, "Ваша відповідь відправлена.");
 
         // Позначаємо лист як прочитаний
         await gmailService.markEmailAsRead(emailId);
@@ -251,6 +123,19 @@ async function handleCallbackQuery(callbackQuery) {
         delete pendingEmails[emailId];
         delete emailTimestamps[emailId];
       });
+    } else {
+      await sendMessage(
+        msg.chat.id,
+        "Помилка: Не вдалося знайти деталі листа."
+      );
+    }
+  } else if (data.startsWith("send_gpt_")) {
+    const emailId = data.replace("send_gpt_", "");
+    const emailDetails = pendingEmails[emailId];
+
+    if (emailDetails) {
+      const summary = await openaiService.summarizeEmail(emailDetails.content);
+      await sendMessage(msg.chat.id, `Підсумок листа:\n\n${summary}`);
     } else {
       await sendMessage(
         msg.chat.id,
@@ -267,28 +152,76 @@ async function handleCallbackQuery(callbackQuery) {
       // Видаляємо лист з списку очікування
       delete pendingEmails[emailId];
       delete emailTimestamps[emailId];
-
-      // Завантажуємо наступний лист
-      await checkEmail();
     } else {
       await sendMessage(
         msg.chat.id,
         "Помилка: Не вдалося знайти деталі листа."
       );
     }
-  } else if (data.startsWith("delete_email_")) {
-    const emailId = data.replace("delete_email_", "");
+  } else if (data.startsWith("skip_")) {
+    const emailId = data.replace("skip_", "");
     const emailDetails = pendingEmails[emailId];
 
     if (emailDetails) {
-      await gmailService.deleteEmail(emailId);
-      await sendMessage(msg.chat.id, "Лист видалено.");
+      await sendMessage(msg.chat.id, "Лист пропущено.");
+      // Видаляємо лист з списку очікування, залишаючи його непрочитаним
+      delete pendingEmails[emailId];
+      delete emailTimestamps[emailId];
+    } else {
+      await sendMessage(
+        msg.chat.id,
+        "Помилка: Не вдалося знайти деталі листа."
+      );
+    }
+  } else if (data.startsWith("filter_")) {
+    const emailId = data.replace("filter_", "");
+    const emailDetails = pendingEmails[emailId];
+
+    if (emailDetails) {
+      // Отримуємо список міток Gmail
+      const labels = await gmailService.getGmailLabels();
+
+      // Створюємо кнопки з мітками
+      const labelButtons = labels.map((label) => ({
+        text: label.name,
+        callback_data: `label_${label.id}_${emailId}`,
+      }));
+
+      // Розбиваємо кнопки на рядки по 2 кнопки
+      const inline_keyboard = [];
+      for (let i = 0; i < labelButtons.length; i += 2) {
+        inline_keyboard.push(labelButtons.slice(i, i + 2));
+      }
+
+      const options = {
+        reply_markup: {
+          inline_keyboard,
+        },
+        parse_mode: "Markdown",
+      };
+
+      await sendMessage(
+        msg.chat.id,
+        "Оберіть мітку для фільтрації листа:",
+        options
+      );
+    } else {
+      await sendMessage(
+        msg.chat.id,
+        "Помилка: Не вдалося знайти деталі листа."
+      );
+    }
+  } else if (data.startsWith("label_")) {
+    const [_, labelId, emailId] = data.split("_");
+    const emailDetails = pendingEmails[emailId];
+
+    if (emailDetails) {
+      await gmailService.addLabelToEmail(emailId, labelId);
+      await sendMessage(msg.chat.id, "Мітку додано до листа.");
+
       // Видаляємо лист з списку очікування
       delete pendingEmails[emailId];
       delete emailTimestamps[emailId];
-
-      // Завантажуємо наступний лист
-      await checkEmail();
     } else {
       await sendMessage(
         msg.chat.id,
@@ -301,5 +234,5 @@ async function handleCallbackQuery(callbackQuery) {
 module.exports = {
   checkEmail,
   handleCallbackQuery,
-  sendDailySummary, // Експортуємо нову функцію
+  settings,
 };

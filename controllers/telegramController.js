@@ -5,11 +5,8 @@ const { google } = require("googleapis");
 const fs = require("fs");
 const path = require("path");
 const { SCOPES, TOKEN_PATH } = require("../utils/auth");
-const senderStore = require("../utils/senderStore");
 const emailController = require("./emailController");
 const gmailService = require("../services/gmailService");
-const categoryStore = require("../utils/categoryStore");
-const openaiService = require("../services/openaiService");
 const logger = require("../utils/logger");
 
 const telegramChatId = process.env.TELEGRAM_CHAT_ID;
@@ -22,11 +19,104 @@ function startBot() {
   bot.onText(/\/start/, (msg) => {
     sendMessage(
       msg.chat.id,
-      "Вітаю! Я ваш бот для управління поштою. Ви можете використовувати наступні команди:\n/settings - Налаштування бота\n/subscriptions - Керування підписками"
+      "Вітаю! Я ваш бот для управління поштою. Ви можете використовувати наступні команди:\n/settings - Налаштування бота"
     );
   });
 
   bot.onText(/\/settings/, async (msg) => {
+    const options = {
+      reply_markup: {
+        keyboard: [
+          ["/change_update_interval", "/change_daily_summary_time"],
+          ["/change_max_emails", "/change_keys"],
+          ["/back"],
+        ],
+        resize_keyboard: true,
+        one_time_keyboard: true,
+      },
+    };
+    await sendMessage(msg.chat.id, "Оберіть опцію налаштувань:", options);
+  });
+
+  bot.onText(/\/change_update_interval/, async (msg) => {
+    await sendMessage(
+      msg.chat.id,
+      "Введіть новий інтервал оновлення (у хвилинах):"
+    );
+    bot.once("message", async (msg) => {
+      const interval = parseInt(msg.text.trim());
+      if (isNaN(interval) || interval <= 0) {
+        await sendMessage(msg.chat.id, "Невірне значення. Спробуйте ще раз.");
+      } else {
+        emailController.settings.updateInterval = interval * 60 * 1000;
+        await sendMessage(
+          msg.chat.id,
+          `Інтервал оновлення встановлено на ${interval} хвилин.`
+        );
+      }
+    });
+  });
+
+  bot.onText(/\/change_daily_summary_time/, async (msg) => {
+    await sendMessage(
+      msg.chat.id,
+      "Введіть новий час щоденного підсумку (у форматі HH:MM):"
+    );
+    bot.once("message", async (msg) => {
+      const timeParts = msg.text.trim().split(":");
+      if (timeParts.length !== 2) {
+        await sendMessage(
+          msg.chat.id,
+          "Невірний формат часу. Спробуйте ще раз."
+        );
+      } else {
+        const hour = parseInt(timeParts[0]);
+        const minute = parseInt(timeParts[1]);
+        if (
+          isNaN(hour) ||
+          isNaN(minute) ||
+          hour < 0 ||
+          hour > 23 ||
+          minute < 0 ||
+          minute > 59
+        ) {
+          await sendMessage(
+            msg.chat.id,
+            "Невірне значення часу. Спробуйте ще раз."
+          );
+        } else {
+          emailController.settings.dailySummaryTime = { hour, minute };
+          await sendMessage(
+            msg.chat.id,
+            `Час щоденного підсумку встановлено на ${hour}:${
+              minute < 10 ? "0" + minute : minute
+            }.`
+          );
+        }
+      }
+    });
+  });
+
+  bot.onText(/\/change_max_emails/, async (msg) => {
+    await sendMessage(
+      msg.chat.id,
+      "Введіть максимальну кількість листів для обробки за раз:"
+    );
+    bot.once("message", async (msg) => {
+      const maxEmails = parseInt(msg.text.trim());
+      if (isNaN(maxEmails) || maxEmails <= 0) {
+        await sendMessage(msg.chat.id, "Невірне значення. Спробуйте ще раз.");
+      } else {
+        emailController.settings.maxEmailsPerCheck = maxEmails;
+        await sendMessage(
+          msg.chat.id,
+          `Максимальна кількість листів встановлена на ${maxEmails}.`
+        );
+      }
+    });
+  });
+
+  bot.onText(/\/change_keys/, async (msg) => {
     const options = {
       reply_markup: {
         inline_keyboard: [
@@ -46,7 +136,7 @@ function startBot() {
         ],
       },
     };
-    await sendMessage(msg.chat.id, "Оберіть опцію:", options);
+    await sendMessage(msg.chat.id, "Оберіть опцію для зміни ключів:", options);
   });
 
   bot.on("callback_query", async (callbackQuery) => {
@@ -76,25 +166,7 @@ function startBot() {
   });
 
   bot.on("message", async (msg) => {
-    if (awaitingGoogleCode) {
-      const code = msg.text.trim();
-      try {
-        await authorizeWithCode(code);
-        awaitingGoogleCode = false;
-        await sendMessage(
-          msg.chat.id,
-          "Авторизація успішна! Бот готовий до роботи."
-        );
-        // Ініціалізуємо Gmail клієнт
-        await gmailService.initGmailClient(oAuth2Client);
-      } catch (error) {
-        console.error("Помилка при авторизації:", error);
-        await sendMessage(
-          msg.chat.id,
-          "Сталася помилка при авторизації. Спробуйте ще раз."
-        );
-      }
-    }
+    // Додаткові обробники повідомлень
   });
 }
 
@@ -129,7 +201,7 @@ async function startGoogleLogin(chatId) {
 
   const authUrl = oAuth2Client.generateAuthUrl({
     access_type: "offline",
-    scope: SCOPES, // Використовуємо оновлений список SCOPES з auth.js
+    scope: SCOPES,
   });
 
   awaitingGoogleCode = true;

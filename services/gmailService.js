@@ -62,7 +62,14 @@ async function getEmailDetails(emailId) {
       );
     }
 
-    return { id: emailId, sender, subject, date, content };
+    return {
+      id: emailId,
+      sender,
+      subject,
+      date,
+      content,
+      threadId: message.threadId,
+    };
   } catch (error) {
     console.error(
       `Помилка при отриманні деталей листа з ID ${emailId}:`,
@@ -81,22 +88,69 @@ async function markEmailAsRead(emailId) {
   });
 }
 
-async function deleteEmail(emailId) {
+async function sendEmailReply(emailData, replyMessage) {
   const gmailClient = await getGmailClient();
-  await gmailClient.users.messages.delete({
+  const rawMessage = [
+    `To: ${emailData.sender}`,
+    `Subject: Re: ${emailData.subject}`,
+    "",
+    replyMessage,
+  ].join("\n");
+
+  const encodedMessage = Buffer.from(rawMessage)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  await gmailClient.users.messages.send({
     userId: "me",
-    id: emailId,
+    requestBody: {
+      raw: encodedMessage,
+      threadId: emailData.threadId,
+    },
   });
 }
 
-async function unsubscribeFromNewsletter(emailContent) {
-  // Ваш код для відписки від розсилки
+async function addLabelToEmail(emailId, labelName) {
+  const gmailClient = await getGmailClient();
+  // Отримуємо список міток
+  const labelsRes = await gmailClient.users.labels.list({ userId: "me" });
+  let label = labelsRes.data.labels.find((l) => l.name === labelName);
+
+  // Якщо мітки немає, створюємо її
+  if (!label) {
+    const labelRes = await gmailClient.users.labels.create({
+      userId: "me",
+      requestBody: {
+        name: labelName,
+        labelListVisibility: "labelShow",
+        messageListVisibility: "show",
+      },
+    });
+    label = labelRes.data;
+  }
+
+  // Додаємо мітку до листа
+  await gmailClient.users.messages.modify({
+    userId: "me",
+    id: emailId,
+    resource: {
+      addLabelIds: [label.id],
+    },
+  });
+}
+async function getGmailLabels() {
+  const gmailClient = await getGmailClient();
+  const res = await gmailClient.users.labels.list({ userId: "me" });
+  return res.data.labels;
 }
 
 module.exports = {
   getUnreadEmails,
+  getGmailLabels,
   getEmailDetails,
   markEmailAsRead,
-  deleteEmail,
-  unsubscribeFromNewsletter,
+  sendEmailReply,
+  addLabelToEmail,
 };
