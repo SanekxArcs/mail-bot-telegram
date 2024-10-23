@@ -129,7 +129,7 @@ async function startGoogleLogin(chatId) {
 
   const authUrl = oAuth2Client.generateAuthUrl({
     access_type: "offline",
-    scope: SCOPES,
+    scope: SCOPES, // Використовуємо оновлений список SCOPES з auth.js
   });
 
   awaitingGoogleCode = true;

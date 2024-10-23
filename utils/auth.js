@@ -4,6 +4,10 @@ const { google } = require("googleapis");
 const fs = require("fs");
 const path = require("path");
 
+const SCOPES = [
+  "https://mail.google.com/", // Повний доступ до Gmail
+  "https://www.googleapis.com/auth/calendar",
+];
 const TOKEN_PATH = path.join(__dirname, "..", "token.json");
 const CREDENTIALS_PATH = path.join(__dirname, "..", "credentials.json");
 
@@ -30,4 +34,6 @@ async function authorize() {
 
 module.exports = {
   authorize,
+  SCOPES, // Експортуємо SCOPES для використання в інших місцях
+  TOKEN_PATH,
 };

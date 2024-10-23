@@ -1,10 +1,11 @@
+// services/gmailService.js
+
 const { google } = require("googleapis");
 const { authorize } = require("../utils/auth");
 const axios = require("axios");
 const logger = require("../utils/logger");
 
 let gmail;
-
 
 async function getGmailClient() {
   if (gmail) {
@@ -17,7 +18,6 @@ async function getGmailClient() {
   return gmail;
 }
 
-
 async function getUnreadEmails() {
   const gmailClient = await getGmailClient();
   const res = await gmailClient.users.messages.list({
@@ -27,14 +27,10 @@ async function getUnreadEmails() {
   return res.data.messages || [];
 }
 
-async function initGmailClient(oAuth2Client) {
-  gmail = google.gmail({ version: "v1", auth: oAuth2Client });
-}
-
-
 async function getEmailDetails(emailId) {
   try {
-    const res = await gmail.users.messages.get({
+    const gmailClient = await getGmailClient();
+    const res = await gmailClient.users.messages.get({
       userId: "me",
       id: emailId,
       format: "full",
@@ -45,9 +41,11 @@ async function getEmailDetails(emailId) {
     const headers = message.payload.headers;
     const fromHeader = headers.find((header) => header.name === "From");
     const subjectHeader = headers.find((header) => header.name === "Subject");
+    const dateHeader = headers.find((header) => header.name === "Date");
 
     const sender = fromHeader ? fromHeader.value : "Unknown Sender";
     const subject = subjectHeader ? subjectHeader.value : "No Subject";
+    const date = dateHeader ? new Date(dateHeader.value) : new Date();
 
     // Обробка вмісту
     let content = "";
@@ -64,7 +62,7 @@ async function getEmailDetails(emailId) {
       );
     }
 
-    return { id: emailId, sender, subject, content };
+    return { id: emailId, sender, subject, date, content };
   } catch (error) {
     console.error(
       `Помилка при отриманні деталей листа з ID ${emailId}:`,
@@ -75,17 +73,30 @@ async function getEmailDetails(emailId) {
 }
 
 async function markEmailAsRead(emailId) {
-  await gmail.users.messages.modify({
+  const gmailClient = await getGmailClient();
+  await gmailClient.users.messages.modify({
     userId: "me",
     id: emailId,
     resource: { removeLabelIds: ["UNREAD"] },
   });
 }
 
+async function deleteEmail(emailId) {
+  const gmailClient = await getGmailClient();
+  await gmailClient.users.messages.delete({
+    userId: "me",
+    id: emailId,
+  });
+}
+
+async function unsubscribeFromNewsletter(emailContent) {
+  // Ваш код для відписки від розсилки
+}
+
 module.exports = {
-  getGmailClient,
-  initGmailClient,
   getUnreadEmails,
   getEmailDetails,
   markEmailAsRead,
+  deleteEmail,
+  unsubscribeFromNewsletter,
 };

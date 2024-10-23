@@ -27,7 +27,7 @@ async function checkEmail() {
     const messagesToProcess = newMessages.slice(0, availableSlots);
 
     for (const message of messagesToProcess) {
-      const { id, sender, subject, content } =
+      const { id, sender, subject, date, content } =
         await gmailService.getEmailDetails(message.id);
 
       // Перевірка, чи відправник відомий
@@ -35,10 +35,10 @@ async function checkEmail() {
 
       if (!senderCategory) {
         // Зберігаємо деталі листа
-        pendingEmails[id] = { sender, content, id };
+        pendingEmails[id] = { sender, subject, date, content, id };
         emailTimestamps[id] = Date.now();
 
-        await askForSorting(sender, content, id);
+        await askForSorting(sender, subject, date, content, id);
       } else {
         await handleEmailByCategory(senderCategory, content);
         // Позначаємо лист як прочитаний
@@ -62,7 +62,13 @@ async function checkEmail() {
   }
 }
 
-async function askForSorting(emailSender, emailContent, emailId) {
+async function askForSorting(
+  emailSender,
+  emailSubject,
+  emailDate,
+  emailContent,
+  emailId
+) {
   const categories = categoryStore.loadCategories();
 
   // Створюємо кнопки категорій
@@ -71,15 +77,13 @@ async function askForSorting(emailSender, emailContent, emailId) {
     callback_data: `category_${category}_${emailId}`,
   }));
 
-  // Додаємо кнопку "Нова категорія" та "Надіслати до GPT"
-  categoryButtons.push({
-    text: "Нова категорія",
-    callback_data: `new_category_${emailId}`,
-  });
-  categoryButtons.push({
-    text: "Надіслати до GPT",
-    callback_data: `send_gpt_${emailId}`,
-  });
+  // Додаємо додаткові кнопки
+  categoryButtons.push(
+    { text: "Нова категорія", callback_data: `new_category_${emailId}` },
+    { text: "Надіслати до GPT", callback_data: `send_gpt_${emailId}` },
+    { text: "Відмітити як прочитане", callback_data: `mark_read_${emailId}` },
+    { text: "Видалити лист", callback_data: `delete_email_${emailId}` }
+  );
 
   // Розбиваємо кнопки на рядки по 2 кнопки
   const inline_keyboard = [];
@@ -91,13 +95,20 @@ async function askForSorting(emailSender, emailContent, emailId) {
     reply_markup: {
       inline_keyboard,
     },
+    parse_mode: "Markdown",
   };
 
-  await sendMessage(
-    telegramChatId,
-    `Як ви хочете відсортувати лист від ${emailSender}?`,
-    options
-  );
+  const formattedDate = emailDate.toLocaleString();
+
+  const messageText = `Ви отримали новий лист:
+
+**Від:** ${emailSender}
+**Тема:** ${emailSubject}
+**Дата:** ${formattedDate}
+
+Як ви хочете відсортувати цей лист?`;
+
+  await sendMessage(telegramChatId, messageText, options);
 }
 
 async function handleEmailByCategory(category, emailContent) {
@@ -208,6 +219,44 @@ async function handleCallbackQuery(callbackQuery) {
         delete pendingEmails[emailId];
         delete emailTimestamps[emailId];
       });
+    } else {
+      await sendMessage(
+        msg.chat.id,
+        "Помилка: Не вдалося знайти деталі листа."
+      );
+    }
+  } else if (data.startsWith("mark_read_")) {
+    const emailId = data.replace("mark_read_", "");
+    const emailDetails = pendingEmails[emailId];
+
+    if (emailDetails) {
+      await gmailService.markEmailAsRead(emailId);
+      await sendMessage(msg.chat.id, "Лист позначено як прочитаний.");
+      // Видаляємо лист з списку очікування
+      delete pendingEmails[emailId];
+      delete emailTimestamps[emailId];
+
+      // Завантажуємо наступний лист
+      await checkEmail();
+    } else {
+      await sendMessage(
+        msg.chat.id,
+        "Помилка: Не вдалося знайти деталі листа."
+      );
+    }
+  } else if (data.startsWith("delete_email_")) {
+    const emailId = data.replace("delete_email_", "");
+    const emailDetails = pendingEmails[emailId];
+
+    if (emailDetails) {
+      await gmailService.deleteEmail(emailId);
+      await sendMessage(msg.chat.id, "Лист видалено.");
+      // Видаляємо лист з списку очікування
+      delete pendingEmails[emailId];
+      delete emailTimestamps[emailId];
+
+      // Завантажуємо наступний лист
+      await checkEmail();
     } else {
       await sendMessage(
         msg.chat.id,
