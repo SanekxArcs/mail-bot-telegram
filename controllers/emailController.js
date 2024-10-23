@@ -10,6 +10,7 @@ const categoryStore = require("../utils/categoryStore");
 
 const pendingEmails = {};
 const emailTimestamps = {};
+const dailyEmails = []; // Масив для зберігання листів протягом дня
 const telegramChatId = process.env.TELEGRAM_CHAT_ID;
 
 async function checkEmail() {
@@ -27,8 +28,16 @@ async function checkEmail() {
     const messagesToProcess = newMessages.slice(0, availableSlots);
 
     for (const message of messagesToProcess) {
-      const { id, sender, subject, date, content } =
-        await gmailService.getEmailDetails(message.id);
+      const emailDetails = await gmailService.getEmailDetails(message.id);
+      const { id, sender, subject, date, content } = emailDetails;
+
+      // Додаємо лист до щоденного підсумку
+      dailyEmails.push({
+        id,
+        sender,
+        subject,
+        date,
+      });
 
       // Перевірка, чи відправник відомий
       const senderCategory = senderStore.getSenderCategory(sender);
@@ -60,6 +69,29 @@ async function checkEmail() {
   } catch (error) {
     logger.error("Помилка при перевірці пошти:", error);
   }
+}
+
+async function sendDailySummary() {
+  if (dailyEmails.length === 0) {
+    await sendMessage(telegramChatId, "Сьогодні ви не отримали нових листів.");
+    return;
+  }
+
+  let summaryMessage = `Підсумок отриманої пошти за сьогодні:\n\nКількість листів: ${dailyEmails.length}\n\n`;
+
+  for (const email of dailyEmails) {
+    const formattedDate = email.date.toLocaleString();
+    summaryMessage += `📧 **Від:** ${email.sender}\n**Тема:** ${email.subject}\n**Дата:** ${formattedDate}\n\n`;
+  }
+
+  const options = {
+    parse_mode: "Markdown",
+  };
+
+  await sendMessage(telegramChatId, summaryMessage, options);
+
+  // Очищуємо масив після відправки підсумку
+  dailyEmails.length = 0;
 }
 
 async function askForSorting(
@@ -269,4 +301,5 @@ async function handleCallbackQuery(callbackQuery) {
 module.exports = {
   checkEmail,
   handleCallbackQuery,
+  sendDailySummary, // Експортуємо нову функцію
 };
