@@ -1,22 +1,24 @@
+// services/openaiService.js
+
 const axios = require("axios");
 
-async function analyzeEmailWithGPT(emailContent) {
+async function summarizeEmail(emailContent) {
   const response = await axios.post(
     "https://api.openai.com/v1/completions",
     {
       model: "text-davinci-003",
-      prompt: `Проаналізуй цей лист і скажи, чи важливо його переглядати: ${emailContent}`,
-      max_tokens: 100,
+      prompt: `Підсумуй наступний лист українською мовою:\n\n${emailContent}`,
+      max_tokens: 150,
     },
     {
       headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
     }
   );
 
-  const result = response.data.choices[0].text;
-  return result.toLowerCase().includes("важливо");
+  const result = response.data.choices[0].text.trim();
+  return result;
 }
 
 module.exports = {
-  analyzeEmailWithGPT,
+  summarizeEmail,
 };

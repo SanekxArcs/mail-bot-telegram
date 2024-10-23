@@ -1,45 +1,34 @@
+// utils/senderStore.js
+
 const fs = require("fs");
 const path = require("path");
 
-const senderFilePath = path.join(__dirname, "senders.json");
+const sendersFilePath = path.join(__dirname, "senders.json");
 
 function loadSenders() {
-  if (fs.existsSync(senderFilePath)) {
-    const data = fs.readFileSync(senderFilePath);
+  if (fs.existsSync(sendersFilePath)) {
+    const data = fs.readFileSync(sendersFilePath);
     return JSON.parse(data);
   }
   return {};
 }
 
 function saveSenders(senders) {
-  fs.writeFileSync(senderFilePath, JSON.stringify(senders, null, 2));
+  fs.writeFileSync(sendersFilePath, JSON.stringify(senders, null, 2));
 }
 
-function getSenderCategory(email) {
+function getSenderCategory(sender) {
   const senders = loadSenders();
-  return senders[email] || null;
+  return senders[sender];
 }
 
-function saveSender(email, category) {
+function saveSender(sender, category) {
   const senders = loadSenders();
-  senders[email] = category;
+  senders[sender] = category;
   saveSenders(senders);
-}
-
-function deleteSender(email) {
-  const senders = loadSenders();
-  delete senders[email];
-  saveSenders(senders);
-}
-
-function getAllSendersByCategory(category) {
-  const senders = loadSenders();
-  return Object.keys(senders).filter((email) => senders[email] === category);
 }
 
 module.exports = {
   getSenderCategory,
   saveSender,
-  deleteSender,
-  getAllSendersByCategory,
 };
