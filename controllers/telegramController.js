@@ -9,18 +9,18 @@ const emailController = require("./emailController");
 const gmailService = require("../services/gmailService");
 const logger = require("../utils/logger");
 
-const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+const settingsFilePath = path.join(__dirname, "..", "settings.json");
 
 let oAuth2Client;
 let awaitingGoogleCode = false;
 
+// Завантажуємо налаштування
+let settings = loadSettings();
+
 // Запускаємо бота
 function startBot() {
-  bot.onText(/\/start/, (msg) => {
-    sendMessage(
-      msg.chat.id,
-      "Вітаю! Я ваш бот для управління поштою. Ви можете використовувати наступні команди:\n/settings - Налаштування бота"
-    );
+  bot.onText(/\/start/, async (msg) => {
+    await checkAndRequestSettings(msg.chat.id);
   });
 
   bot.onText(/\/settings/, async (msg) => {
@@ -49,10 +49,12 @@ function startBot() {
         await sendMessage(msg.chat.id, "Невірне значення. Спробуйте ще раз.");
       } else {
         emailController.settings.updateInterval = interval * 60 * 1000;
+        emailController.startEmailChecking(); // Перезапускаємо перевірку пошти з новим інтервалом
         await sendMessage(
           msg.chat.id,
           `Інтервал оновлення встановлено на ${interval} хвилин.`
         );
+        sendStartupMessage(); // Відправляємо оновлені налаштування
       }
     });
   });
@@ -86,12 +88,14 @@ function startBot() {
           );
         } else {
           emailController.settings.dailySummaryTime = { hour, minute };
+          emailController.scheduleDailySummary(); // Переплановуємо щоденний підсумок
           await sendMessage(
             msg.chat.id,
             `Час щоденного підсумку встановлено на ${hour}:${
               minute < 10 ? "0" + minute : minute
             }.`
           );
+          sendStartupMessage(); // Відправляємо оновлені налаштування
         }
       }
     });
@@ -112,6 +116,7 @@ function startBot() {
           msg.chat.id,
           `Максимальна кількість листів встановлена на ${maxEmails}.`
         );
+        sendStartupMessage(); // Відправляємо оновлені налаштування
       }
     });
   });
@@ -147,18 +152,44 @@ function startBot() {
       await sendMessage(msg.chat.id, "Введіть новий API ключ OpenAI:");
       bot.once("message", async (msg) => {
         const openAiApiKey = msg.text.trim();
-        await saveSetting("OPENAI_API_KEY", openAiApiKey);
+        await saveEnvVariable("OPENAI_API_KEY", openAiApiKey);
         await sendMessage(msg.chat.id, "API ключ OpenAI збережено.");
+        sendStartupMessage(); // Відправляємо оновлені налаштування
       });
     } else if (data === "set_telegram_chat_id") {
       await sendMessage(msg.chat.id, "Введіть новий Telegram Chat ID:");
       bot.once("message", async (msg) => {
         const chatId = msg.text.trim();
-        await saveSetting("TELEGRAM_CHAT_ID", chatId);
+        settings.telegramChatId = chatId;
+        saveSettings();
         await sendMessage(msg.chat.id, "Telegram Chat ID збережено.");
+        sendStartupMessage(); // Відправляємо оновлені налаштування
       });
     } else if (data === "login_google") {
       await startGoogleLogin(msg.chat.id);
+    } else if (data === "use_current_chat_id") {
+      settings.telegramChatId = callbackQuery.message.chat.id;
+      saveSettings();
+      await sendMessage(
+        callbackQuery.message.chat.id,
+        `Встановлено Telegram Chat ID: ${settings.telegramChatId}`
+      );
+      await checkAndRequestSettings(callbackQuery.message.chat.id);
+    } else if (data === "enter_chat_id") {
+      await sendMessage(
+        callbackQuery.message.chat.id,
+        "Введіть Telegram Chat ID:"
+      );
+      bot.once("message", async (msg) => {
+        const enteredChatId = msg.text.trim();
+        settings.telegramChatId = enteredChatId;
+        saveSettings();
+        await sendMessage(
+          callbackQuery.message.chat.id,
+          `Встановлено Telegram Chat ID: ${enteredChatId}`
+        );
+        await checkAndRequestSettings(callbackQuery.message.chat.id);
+      });
     } else {
       // Інші обробки callback_query
       await emailController.handleCallbackQuery(callbackQuery);
@@ -166,31 +197,102 @@ function startBot() {
   });
 
   bot.on("message", async (msg) => {
-    // Додаткові обробники повідомлень
+    if (awaitingGoogleCode && msg.text) {
+      const code = msg.text.trim();
+      try {
+        await authorizeWithCode(code);
+        awaitingGoogleCode = false;
+        await sendMessage(msg.chat.id, "Авторизація через Google успішна.");
+        settings.googleAuthorized = true;
+        saveSettings();
+        // Перевіряємо інші налаштування
+        await checkAndRequestSettings(msg.chat.id);
+      } catch (error) {
+        await sendMessage(
+          msg.chat.id,
+          "Помилка при авторизації через Google. Спробуйте ще раз."
+        );
+      }
+    }
   });
 }
 
-async function saveSetting(key, value) {
-  const envFilePath = path.join(__dirname, "..", ".env");
-  const envConfig = fs.readFileSync(envFilePath, "utf-8").split("\n");
-  let keyFound = false;
+// Функція для перевірки та запиту налаштувань
+async function checkAndRequestSettings(chatId) {
+  let missingSettings = [];
 
-  const newConfig = envConfig.map((line) => {
-    if (line.startsWith(`${key}=`)) {
-      keyFound = true;
-      return `${key}=${value}`;
-    }
-    return line;
-  });
-
-  if (!keyFound) {
-    newConfig.push(`${key}=${value}`);
+  if (!settings.telegramChatId) {
+    missingSettings.push("Telegram Chat ID");
+  }
+  if (!process.env.OPENAI_API_KEY) {
+    missingSettings.push("OpenAI API Key");
+  }
+  if (!fs.existsSync(TOKEN_PATH)) {
+    missingSettings.push("Google Tokens");
   }
 
-  fs.writeFileSync(envFilePath, newConfig.join("\n"));
-  process.env[key] = value;
+  if (missingSettings.length === 0) {
+    await sendMessage(
+      chatId,
+      "✅ Бот активовано з усіма необхідними налаштуваннями."
+    );
+    // Відправляємо повідомлення з поточними налаштуваннями
+    sendStartupMessage();
+    // Запускаємо перевірку пошти та щоденний підсумок
+    emailController.startEmailChecking();
+    emailController.scheduleDailySummary();
+  } else {
+    await sendMessage(
+      chatId,
+      `Необхідно налаштувати наступні параметри: ${missingSettings.join(", ")}`
+    );
+    for (const setting of missingSettings) {
+      if (setting === "Telegram Chat ID") {
+        await requestTelegramChatId(chatId);
+      } else if (setting === "OpenAI API Key") {
+        await requestOpenAIApiKey(chatId);
+      } else if (setting === "Google Tokens") {
+        await startGoogleLogin(chatId);
+      }
+    }
+  }
 }
 
+// Функція для запиту Telegram Chat ID
+async function requestTelegramChatId(chatId) {
+  const options = {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          {
+            text: "Використати поточний чат",
+            callback_data: "use_current_chat_id",
+          },
+        ],
+        [{ text: "Ввести інший Chat ID", callback_data: "enter_chat_id" }],
+      ],
+    },
+  };
+  await sendMessage(
+    chatId,
+    "Оберіть Telegram Chat ID для використання:",
+    options
+  );
+}
+
+// Функція для запиту OpenAI API Key
+async function requestOpenAIApiKey(chatId) {
+  await sendMessage(chatId, "Введіть ваш OpenAI API Key:");
+  bot.once("message", async (msg) => {
+    const openAiApiKey = msg.text.trim();
+    await saveEnvVariable("OPENAI_API_KEY", openAiApiKey);
+    await sendMessage(chatId, "OpenAI API Key збережено.");
+    // Перевіряємо інші налаштування
+    await checkAndRequestSettings(chatId);
+  });
+}
+
+// Функція для запуску авторизації через Google
 async function startGoogleLogin(chatId) {
   const { client_id, client_secret } = getGoogleCredentials();
   oAuth2Client = new google.auth.OAuth2(
@@ -212,12 +314,14 @@ async function startGoogleLogin(chatId) {
   );
 }
 
+// Функція для авторизації з кодом
 async function authorizeWithCode(code) {
   const { tokens } = await oAuth2Client.getToken(code);
   oAuth2Client.setCredentials(tokens);
   fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens));
 }
 
+// Завантаження Google Credentials
 function getGoogleCredentials() {
   const credentialsPath = path.join(__dirname, "..", "credentials.json");
   const credentials = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
@@ -225,7 +329,64 @@ function getGoogleCredentials() {
   return { client_id, client_secret };
 }
 
+// Функція для збереження налаштувань
+function saveSettings() {
+  fs.writeFileSync(settingsFilePath, JSON.stringify(settings, null, 2));
+}
+
+// Функція для завантаження налаштувань
+function loadSettings() {
+  if (fs.existsSync(settingsFilePath)) {
+    return JSON.parse(fs.readFileSync(settingsFilePath, "utf8"));
+  } else {
+    return {};
+  }
+}
+
+// Функція для збереження змінної в .env
+async function saveEnvVariable(key, value) {
+  const envFilePath = path.join(__dirname, "..", ".env");
+  const envConfig = fs.readFileSync(envFilePath, "utf-8").split("\n");
+  let keyFound = false;
+
+  const newConfig = envConfig.map((line) => {
+    if (line.startsWith(`${key}=`)) {
+      keyFound = true;
+      return `${key}=${value}`;
+    }
+    return line;
+  });
+
+  if (!keyFound) {
+    newConfig.push(`${key}=${value}`);
+  }
+
+  fs.writeFileSync(envFilePath, newConfig.join("\n"));
+  process.env[key] = value;
+}
+
+// Функція для відправки повідомлення з налаштуваннями
+function sendStartupMessage() {
+  const updateIntervalMinutes = emailController.settings.updateInterval / 60000;
+  const summaryTime = `${
+    emailController.settings.dailySummaryTime.hour
+  }:${emailController.settings.dailySummaryTime.minute
+    .toString()
+    .padStart(2, "0")}`;
+  const maxEmails = emailController.settings.maxEmailsPerCheck;
+
+  const message = `✅ Бот активовано!
+
+**Поточні налаштування:**
+- Інтервал оновлення: ${updateIntervalMinutes} хвилин
+- Час щоденного підсумку: ${summaryTime}
+- Кількість листів для обробки за раз: ${maxEmails}`;
+
+  sendMessage(settings.telegramChatId, message, { parse_mode: "Markdown" });
+}
+
 module.exports = {
   startBot,
+  sendStartupMessage,
   sendMessage,
 };

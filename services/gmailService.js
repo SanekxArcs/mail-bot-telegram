@@ -1,5 +1,3 @@
-// services/gmailService.js
-
 const { google } = require("googleapis");
 const { authorize } = require("../utils/auth");
 const axios = require("axios");
@@ -23,6 +21,19 @@ async function getUnreadEmails() {
   const res = await gmailClient.users.messages.list({
     userId: "me",
     q: "is:unread",
+  });
+  return res.data.messages || [];
+}
+
+async function getEmailsReceivedToday() {
+  const gmailClient = await getGmailClient();
+  const today = new Date();
+  today.setHours(0, 0, 0, 0); // Початок дня
+  const afterDate = Math.floor(today.getTime() / 1000); // Unix timestamp
+  const query = `after:${afterDate}`;
+  const res = await gmailClient.users.messages.list({
+    userId: "me",
+    q: query,
   });
   return res.data.messages || [];
 }
@@ -78,6 +89,78 @@ async function getEmailDetails(emailId) {
     return null;
   }
 }
+
+// async function getGmailClient() {
+//   if (gmail) {
+//     logger.info("Gmail клієнт вже ініціалізовано.");
+//     return gmail;
+//   }
+//   logger.info("Ініціалізація Gmail клієнта...");
+//   const authClient = await authorize();
+//   gmail = google.gmail({ version: "v1", auth: authClient });
+//   return gmail;
+// }
+
+// async function getUnreadEmails() {
+//   const gmailClient = await getGmailClient();
+//   const res = await gmailClient.users.messages.list({
+//     userId: "me",
+//     q: "is:unread",
+//   });
+//   return res.data.messages || [];
+// }
+
+// async function getEmailDetails(emailId) {
+//   try {
+//     const gmailClient = await getGmailClient();
+//     const res = await gmailClient.users.messages.get({
+//       userId: "me",
+//       id: emailId,
+//       format: "full",
+//     });
+//     const message = res.data;
+
+//     // Обробка заголовків
+//     const headers = message.payload.headers;
+//     const fromHeader = headers.find((header) => header.name === "From");
+//     const subjectHeader = headers.find((header) => header.name === "Subject");
+//     const dateHeader = headers.find((header) => header.name === "Date");
+
+//     const sender = fromHeader ? fromHeader.value : "Unknown Sender";
+//     const subject = subjectHeader ? subjectHeader.value : "No Subject";
+//     const date = dateHeader ? new Date(dateHeader.value) : new Date();
+
+//     // Обробка вмісту
+//     let content = "";
+//     if (message.payload.parts) {
+//       const part = message.payload.parts.find(
+//         (part) => part.mimeType === "text/plain"
+//       );
+//       if (part && part.body && part.body.data) {
+//         content = Buffer.from(part.body.data, "base64").toString("utf-8");
+//       }
+//     } else if (message.payload.body && message.payload.body.data) {
+//       content = Buffer.from(message.payload.body.data, "base64").toString(
+//         "utf-8"
+//       );
+//     }
+
+//     return {
+//       id: emailId,
+//       sender,
+//       subject,
+//       date,
+//       content,
+//       threadId: message.threadId,
+//     };
+//   } catch (error) {
+//     console.error(
+//       `Помилка при отриманні деталей листа з ID ${emailId}:`,
+//       error
+//     );
+//     return null;
+//   }
+// }
 
 async function markEmailAsRead(emailId) {
   const gmailClient = await getGmailClient();
@@ -148,6 +231,7 @@ async function getGmailLabels() {
 
 module.exports = {
   getUnreadEmails,
+  getEmailsReceivedToday,
   getGmailLabels,
   getEmailDetails,
   markEmailAsRead,

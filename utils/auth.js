@@ -1,15 +1,13 @@
-// utils/auth.js
+/// utils/auth.js
 
-const { google } = require("googleapis");
-const fs = require("fs");
-const path = require("path");
+const { google } = require('googleapis');
+const fs = require('fs');
+const path = require('path');
 
-const SCOPES = [
-  "https://mail.google.com/", // Повний доступ до Gmail
-  "https://www.googleapis.com/auth/calendar",
-];
-const TOKEN_PATH = path.join(__dirname, "..", "token.json");
-const CREDENTIALS_PATH = path.join(__dirname, "..", "credentials.json");
+const TOKEN_PATH = path.join(__dirname, '..', 'token.json');
+const CREDENTIALS_PATH = path.join(__dirname, '..', 'credentials.json');
+
+const SCOPES = ['https://www.googleapis.com/auth/gmail.modify'];
 
 async function authorize() {
   const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, "utf8"));
@@ -34,6 +32,6 @@ async function authorize() {
 
 module.exports = {
   authorize,
-  SCOPES, // Експортуємо SCOPES для використання в інших місцях
+  SCOPES,
   TOKEN_PATH,
 };
